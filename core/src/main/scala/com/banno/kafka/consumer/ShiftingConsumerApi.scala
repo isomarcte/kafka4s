@@ -3,10 +3,12 @@ package com.banno.kafka.consumer
 import cats._
 import cats.arrow._
 import cats.effect._
+import org.apache.kafka.clients.consumer._
+import org.apache.kafka.common._
 import org.apache.kafka.common.serialization._
 
 object ShiftingConsumerApi {
-  def apply[F[_]: Concurrent: ContextShift, K, V](
+  def apply[F[_]: ConcurrentEffect: ContextShift, K, V](
     blocker: Blocker
   )(
     consumerApi: ConsumerApi[F, K, V]
@@ -19,9 +21,22 @@ object ShiftingConsumerApi {
         }
       override final protected val backingConsumer: ConsumerApi[F, K, V] =
         consumerApi
+
+      // According to the Kafka documentation, these calls will not
+      // block. This makes them suitable for any thread pool.
+
+      override final def commitAsync: F[Unit] =
+        this.backingConsumer.commitAsync
+      override final def commitAsync(
+        offsets: Map[TopicPartition, OffsetAndMetadata],
+        callback: OffsetCommitCallback
+      ): F[Unit] =
+        this.backingConsumer.commitAsync(offsets, callback)
+      override final def commitAsync(callback: OffsetCommitCallback): F[Unit] =
+        this.backingConsumer.commitAsync(callback)
     }
 
-  def create[F[_]: Concurrent: ContextShift, K, V](
+  def create[F[_]: ConcurrentEffect: ContextShift, K, V](
     blocker: Blocker
   )(
     keyDeserializer: Deserializer[K],

@@ -17,21 +17,34 @@ import scala.collection.JavaConverters._
   */
 object SynchronizedConsumerApi {
 
-  def create[F[_]: Concurrent, K, V](
+  def create[F[_], K, V](
     keyDeserializer: Deserializer[K],
     valueDeserializer: Deserializer[V],
     configs: (String, AnyRef)*
-  ): Resource[F, ConsumerApi[F, K, V]] =
+  )(implicit F: ConcurrentEffect[F]): Resource[F, ConsumerApi[F, K, V]] =
     Resource.make[F, ConsumerApi[F, K, V]](
       Semaphore[F](1L).map((s: Semaphore[F]) =>
         new ConsumerApiK[F, F, K, V] {
-          override final protected val nat: F ~> F =
+          override final protected lazy val nat: F ~> F =
             new FunctionK[F, F] {
               override final def apply[A](fa: F[A]): F[A] =
-                s.withPermit(fa)
+                s.withPermit(
+                  F.cancelable { cb =>
+                    val token: CancelToken[F] = F.runCancelable(fa)(r =>
+                      IO(cb(r))
+                    ).unsafeRunSync
+
+                    // According to the Kafka documentation, the intended
+                    // mechanism for interrupting a call to the Consumer API
+                    // is to invoke the wakeup method. Thus, here we invoke
+                    // _both_ the wakeup method _and_ the CancelToken return
+                    // by runCancelable.
+                    backingConsumer.wakeup *> token
+                  }
+                )
             }
 
-          override final protected val backingConsumer: ConsumerApi[F, K, V] =
+          override final protected lazy val backingConsumer: ConsumerApi[F, K, V] =
             ConsumerImpl.create(
               new KafkaConsumer[K, V](configs.toMap.asJava, keyDeserializer, valueDeserializer)
             )
